@@ -1,5 +1,10 @@
 """
 FILE: database.py
+FUNCTION: The Memory Layer.
+Handles all PostgreSQL interactions, including trade logging, 
+order registration, and persistent status state management.
+"""
+FILE: database.py
 FUNCTION: Manages PostgreSQL connection and data persistence.
 """
 import os
