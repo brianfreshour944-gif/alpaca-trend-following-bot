@@ -1,3 +1,2 @@
-git commit -m "add dependencies for nixpacks"
-git push origin main
-
+pandas
+alpaca-trade-api
