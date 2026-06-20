@@ -3,9 +3,8 @@ FILE: database.py
 FUNCTION: The Memory Layer.
 Handles all PostgreSQL interactions, including trade logging, 
 order registration, and persistent status state management.
-"""
-FILE: database.py
-FUNCTION: Manages PostgreSQL connection and data persistence.
+
+EXTENDED FUNCTION: Manages PostgreSQL connection and data persistence.
 """
 import os
 import psycopg2
@@ -13,6 +12,8 @@ import logging
 
 def get_db_connection():
     return psycopg2.connect(os.getenv('DATABASE_URL'))
+
+# ... keep the rest of your functions (log_trade_to_db, save_position_state, load_position_state) exactly as they are
 
 def log_trade_to_db(bot_name, symbol, side, price, quantity, value, order_id, fee=0.0, realized_pnl=0.0):
     try:
