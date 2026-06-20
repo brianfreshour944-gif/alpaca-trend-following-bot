@@ -1,2 +1,3 @@
 pandas
 alpaca-py
+psycopg2-binary
