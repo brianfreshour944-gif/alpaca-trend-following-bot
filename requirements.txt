@@ -1,4 +1,3 @@
-git add requirements.txt
 git commit -m "add dependencies for nixpacks"
 git push origin main
 
