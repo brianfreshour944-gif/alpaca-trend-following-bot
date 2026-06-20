@@ -46,3 +46,34 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+while True:
+        try:
+            logging.info("Executing core loop iteration...")
+            
+            # 1. Fetch current market data for your symbols
+            # (e.g., getting the latest 1-minute or 5-minute bars from Alpaca)
+            bars = ex.get_latest_bars(["BTC/USD", "ETH/USD"])
+            
+            # 2. Feed that data into your TradingEngine to calculate signals
+            # (e.g., is the short-term trend crossing above the long-term trend?)
+            for symbol, data in bars.items():
+                signal = eng.check_signal(data) 
+                
+                # 3. Check if you need to execute a trade based on the signal
+                if signal == "BUY" and not in_pos:
+                    order = ex.place_market_order(symbol, side="buy", qty=0.1)
+                    in_pos = True
+                    entry = order.price
+                    # Save the new state so you don't lose it if the server crashes
+                    save_position_state(bot_name, in_pos, entry, stop)
+                    
+                elif signal == "SELL" and in_pos:
+                    ex.place_market_order(symbol, side="sell", qty=0.1)
+                    in_pos = False
+                    entry = 0.0
+                    save_position_state(bot_name, in_pos, entry, stop)
+                    
+        except Exception as e:
+            logging.error(f"Error in execution loop: {e}")
+            
+        await asyncio.sleep(60)
