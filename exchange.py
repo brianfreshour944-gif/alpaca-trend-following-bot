@@ -4,7 +4,8 @@ FUNCTION: Manages Alpaca API connections and order execution.
 """
 from alpaca.trading.client import TradingClient
 from alpaca.data.historical import CryptoHistoricalDataClient
-from alpaca.data.requests import CryptoLatestBarsRequest
+# FIX: Changed from CryptoLatestBarsRequest to CryptoLatestBarRequest (singular)
+from alpaca.data.requests import CryptoLatestBarRequest 
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from utils import log_trade 
@@ -17,7 +18,6 @@ class AlpacaManager:
 
     def get_position_qty(self, symbol="BTC/USD"):
         try:
-            # Strip slash for trading endpoint (BTC/USD -> BTCUSD)
             trade_symbol = symbol.replace("/", "")
             pos = self.trading_client.get_position(trade_symbol)
             return float(pos.qty)
@@ -27,24 +27,23 @@ class AlpacaManager:
     def get_latest_bars(self, symbols):
         """
         Fetches the most recent bar data for given symbols.
-        Returns a dictionary mapping symbol strings to their latest bar object.
+        Returns a dictionary mapping symbol strings directly to their latest bar object.
         """
         try:
-            request_params = CryptoLatestBarsRequest(symbol_or_symbols=symbols)
-            bars_response = self.data_client.get_crypto_latest_bars(request_params)
-            return bars_response.data
+            # FIX: Use the singular Request model and method name
+            request_params = CryptoLatestBarRequest(symbol_or_symbols=symbols)
+            bars_response = self.data_client.get_crypto_latest_bar(request_params)
+            
+            # get_crypto_latest_bar returns a raw dictionary of {symbol: Bar} natively,
+            # so we return it directly without looking for a `.data` property wrapper.
+            return bars_response 
         except Exception as e:
             print(f"❌ Error fetching latest bars from Alpaca: {e}")
             return {}
 
     def submit_order(self, symbol, side, qty, fallback_price=0.0):
-        """
-        Submits a market order. Normalizes symbols for trading endpoints.
-        """
         try:
-            # Alpaca execution endpoint requires standard symbols without the slash
             trade_symbol = symbol.replace("/", "")
-            
             order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
             
             order = self.trading_client.submit_order(
@@ -56,10 +55,8 @@ class AlpacaManager:
                 )
             )
             
-            # Use fallback execution price if the order isn't completely filled at submission millisecond
             filled_price = float(order.filled_avg_price) if order.filled_avg_price else float(fallback_price)
             
-            # Log the trade using our utils module tracking parameters
             log_trade(
                 bot_name=self.bot_name,
                 symbol=symbol,
