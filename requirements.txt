@@ -1,2 +1,4 @@
-alpaca-py==0.3.0
-psycopg2-binary==2.9.9
+git add requirements.txt
+git commit -m "add dependencies for nixpacks"
+git push origin main
+
