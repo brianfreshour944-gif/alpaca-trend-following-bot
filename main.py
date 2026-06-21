@@ -19,7 +19,7 @@ logging.basicConfig(
 async def main():
     logging.info(">>> Bot Orchestrator starting up... <<<")
     
-    bot_name = os.getenv('BOT_NAME', 'alpaca_bot_2')
+    bot_name = os.getenv('BOT_NAME', 'alpaca-trend-following-bot')
     ex = AlpacaManager(os.getenv('APCA_API_KEY_ID'), os.getenv('APCA_API_SECRET_KEY'), bot_name=bot_name)
     eng = TradingEngine()
     
