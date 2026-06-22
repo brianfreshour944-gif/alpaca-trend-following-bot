@@ -7,13 +7,22 @@ from datetime import datetime, date
 import database as db  # Uses your bot's database.py (has get_db_connection)
 
 def save_backtest_result(bot_name, strategy_name, start_date, end_date, results):
-    """Insert a single backtest result into the database."""
+    """Insert or update a backtest result in the database."""
     try:
         with db.get_db_connection() as conn, conn.cursor() as cur:
+            # UPSERT: if record exists, update it; otherwise insert
             cur.execute("""
                 INSERT INTO backtest_results 
                 (bot_name, strategy_name, start_date, end_date, total_trades, net_profit, sharpe_ratio, max_drawdown_pct, win_rate)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (bot_name, start_date, end_date) DO UPDATE SET
+                    strategy_name = EXCLUDED.strategy_name,
+                    total_trades = EXCLUDED.total_trades,
+                    net_profit = EXCLUDED.net_profit,
+                    sharpe_ratio = EXCLUDED.sharpe_ratio,
+                    max_drawdown_pct = EXCLUDED.max_drawdown_pct,
+                    win_rate = EXCLUDED.win_rate,
+                    created_at = NOW()
             """, (
                 bot_name,
                 strategy_name,
@@ -26,7 +35,7 @@ def save_backtest_result(bot_name, strategy_name, start_date, end_date, results)
                 round(results['win_rate'], 2)
             ))
             conn.commit()
-        print(f"✅ Inserted backtest for {bot_name}")
+        print(f"✅ Inserted/Updated backtest for {bot_name}")
     except Exception as e:
         print(f"❌ Failed to insert for {bot_name}: {e}")
 
@@ -39,15 +48,15 @@ def run_all_trend_backtests():
             "fast": 9,
             "slow": 21,
             "capital": 1000,
-            "trade_size": 0.001,   # 0.001 BTC
+            "trade_size": 0.001,
         },
         {
-            "bot_name": "alpaca-trend-following-bot",  # Your fixed bot
-            "symbol": "ETH-USD",                       # Change to BTC-USD if it trades BTC
+            "bot_name": "alpaca-trend-following-bot",
+            "symbol": "ETH-USD",  # or BTC-USD if it trades BTC
             "fast": 9,
             "slow": 21,
             "capital": 1000,
-            "trade_size": 0.01,                       # 0.01 ETH (or 0.001 if BTC)
+            "trade_size": 0.01,
         },
     ]
 
