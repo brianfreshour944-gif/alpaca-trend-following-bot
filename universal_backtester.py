@@ -37,11 +37,9 @@ class TrendBacktester:
         holdings = 0.0
         trades = []
 
-        # Mock bar object that matches what engine.check_signal expects
         class MockBar:
             def __init__(self, symbol, close):
                 self.symbol = symbol
-                # Ensure close is a scalar
                 self.close = float(close) if not isinstance(close, (pd.Series, pd.DataFrame)) else float(close.iloc[0])
 
         for idx, row in df.iterrows():
@@ -62,7 +60,6 @@ class TrendBacktester:
                 holdings = 0
                 print(f"SELL at {price:.2f}")
 
-        # Close any remaining position at last price
         if holdings > 0:
             last_price = float(df['Close'].iloc[-1])
             cash += last_price * holdings
@@ -71,7 +68,6 @@ class TrendBacktester:
 
         net_profit = cash - self.capital
 
-        # Metrics
         sell_trades = [t for t in trades if t['type'] in ('SELL', 'SELL (close)')]
         total_trades = len(sell_trades)
 
@@ -84,17 +80,20 @@ class TrendBacktester:
 
         win_rate = (sum(1 for p in profits if p > 0) / len(profits) * 100) if profits else 0.0
 
-        # ---- Safe Sharpe and Drawdown ----
+        # ---- Safe Sharpe ----
         daily_returns = df['Close'].pct_change().dropna()
         sharpe = 0.0
         if not daily_returns.empty:
             std = daily_returns.std()
-            # Ensure scalar
             if hasattr(std, 'iloc'):
                 std = std.iloc[0]
             if std != 0:
                 sharpe = (daily_returns.mean() / std) * np.sqrt(252)
+        if hasattr(sharpe, 'iloc'):
+            sharpe = sharpe.iloc[0]
+        sharpe = float(sharpe)
 
+        # ---- Safe Max Drawdown ----
         cumulative = df['Close'].pct_change().cumsum().fillna(0)
         running_max = cumulative.expanding().max()
         denom = running_max.abs().replace(0, 1)
@@ -102,6 +101,7 @@ class TrendBacktester:
         max_drawdown_pct = drawdown.min() * 100 if not drawdown.empty else 0.0
         if hasattr(max_drawdown_pct, 'iloc'):
             max_drawdown_pct = max_drawdown_pct.iloc[0]
+        max_drawdown_pct = float(max_drawdown_pct)
 
         print(f"\n📊 Backtest Results for {self.symbol}:")
         print(f"   Total Trades: {total_trades}")
