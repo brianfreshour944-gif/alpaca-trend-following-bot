@@ -6,6 +6,8 @@ import asyncio
 import logging
 import os
 import sys
+import database as db   # <-- import your db module
+
 from exchange import AlpacaManager
 from engine import TradingEngine
 from database import load_position_state, save_position_state
@@ -32,20 +34,20 @@ async def main():
     
     while True:
         try:
-            logging.info("Executing core loop iteration...")
+            # ✅ Update bot status to RUNNING (creates/updates row) – ADD THIS LINE
+            db.update_status(bot_name, 'RUNNING')
             
+            logging.info("Executing core loop iteration...")
             # Offload synchronous data fetching to a background worker thread
             bars = await asyncio.to_thread(ex.get_latest_bars, symbols)
             
             for symbol, data in bars.items():
-                # Check signals using math engine
                 signal = eng.check_signal(data) 
-                current_price = data.close  # Get reference close price from data packet
+                current_price = data.close
                 
                 if signal == "BUY" and not in_pos:
                     logging.info(f"🎯 BUY Signal triggered for {symbol}. Placing order...")
                     order = await asyncio.to_thread(ex.submit_order, symbol, "buy", 0.1, current_price)
-                    
                     if order:
                         in_pos = True
                         entry = current_price
@@ -55,7 +57,6 @@ async def main():
                 elif signal == "SELL" and in_pos:
                     logging.info(f"🛑 SELL Signal triggered for {symbol}. Placing order...")
                     order = await asyncio.to_thread(ex.submit_order, symbol, "sell", 0.1, current_price)
-                    
                     if order:
                         in_pos = False
                         entry = 0.0
