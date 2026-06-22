@@ -6,9 +6,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 from datetime import datetime
-import psycopg2
 from engine import TradingEngine
-import os
 
 class TrendBacktester:
     def __init__(self, symbol, fast_p=9, slow_p=21, capital=1000, trade_size=0.1):
@@ -43,13 +41,13 @@ class TrendBacktester:
         class MockBar:
             def __init__(self, symbol, close):
                 self.symbol = symbol
-                self.close = close
+                # Ensure close is a scalar
+                self.close = float(close) if not isinstance(close, (pd.Series, pd.DataFrame)) else float(close.iloc[0])
 
         for idx, row in df.iterrows():
-            # Ensure price is a scalar float (convert from Series if needed)
-            price = float(row['Close'])  # This fixes the Series issue
-            bar = MockBar(self.symbol, price)
+            bar = MockBar(self.symbol, row['Close'])
             signal = engine.check_signal(bar)
+            price = float(row['Close']) if not isinstance(row['Close'], (pd.Series, pd.DataFrame)) else float(row['Close'].iloc[0])
 
             if signal == "BUY" and holdings == 0:
                 cost = price * self.trade_size
@@ -66,8 +64,9 @@ class TrendBacktester:
 
         # Close any remaining position at last price
         if holdings > 0:
-            cash += holdings * df['Close'].iloc[-1]
-            trades.append({'type': 'SELL (close)', 'price': df['Close'].iloc[-1]})
+            last_price = float(df['Close'].iloc[-1])
+            cash += last_price * holdings
+            trades.append({'type': 'SELL (close)', 'price': last_price})
             holdings = 0
 
         net_profit = cash - self.capital
@@ -85,13 +84,24 @@ class TrendBacktester:
 
         win_rate = (sum(1 for p in profits if p > 0) / len(profits) * 100) if profits else 0.0
 
+        # ---- Safe Sharpe and Drawdown ----
         daily_returns = df['Close'].pct_change().dropna()
-        sharpe = (daily_returns.mean() / daily_returns.std() * np.sqrt(252)) if daily_returns.std() != 0 else 0.0
+        sharpe = 0.0
+        if not daily_returns.empty:
+            std = daily_returns.std()
+            # Ensure scalar
+            if hasattr(std, 'iloc'):
+                std = std.iloc[0]
+            if std != 0:
+                sharpe = (daily_returns.mean() / std) * np.sqrt(252)
 
         cumulative = df['Close'].pct_change().cumsum().fillna(0)
         running_max = cumulative.expanding().max()
-        drawdown = (cumulative - running_max) / running_max.abs().replace(0, 1)
+        denom = running_max.abs().replace(0, 1)
+        drawdown = (cumulative - running_max) / denom
         max_drawdown_pct = drawdown.min() * 100 if not drawdown.empty else 0.0
+        if hasattr(max_drawdown_pct, 'iloc'):
+            max_drawdown_pct = max_drawdown_pct.iloc[0]
 
         print(f"\n📊 Backtest Results for {self.symbol}:")
         print(f"   Total Trades: {total_trades}")
