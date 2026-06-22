@@ -31,7 +31,7 @@ def save_backtest_result(bot_name, strategy_name, start_date, end_date, results)
         print(f"❌ Failed to insert for {bot_name}: {e}")
 
 def run_all_trend_backtests():
-    # Define your trend bots (adjust capital and trade_size as needed)
+    # ===== ONLY YOUR 2 ALPACA BOTS =====
     bots = [
         {
             "bot_name": "Grok_alpaca_Apex_v8.py",
@@ -39,21 +39,20 @@ def run_all_trend_backtests():
             "fast": 9,
             "slow": 21,
             "capital": 1000,
-            "trade_size": 0.001,   # 0.001 BTC (~$60 at 60k)
+            "trade_size": 0.001,   # 0.001 BTC
         },
         {
-            "bot_name": "Alpaca-hybrid-bot",
-            "symbol": "ETH-USD",
+            "bot_name": "alpaca-trend-following-bot",  # Your fixed bot
+            "symbol": "ETH-USD",                       # Change to BTC-USD if it trades BTC
             "fast": 9,
             "slow": 21,
             "capital": 1000,
-            "trade_size": 0.01,    # 0.01 ETH (~$15 at 1500)
+            "trade_size": 0.01,                       # 0.01 ETH (or 0.001 if BTC)
         },
-        # Add more trend bots here if needed
     ]
 
     start_date = "2025-01-01"
-    end_date = date.today().strftime("%Y-%m-%d")  # today
+    end_date = date.today().strftime("%Y-%m-%d")
 
     for cfg in bots:
         print(f"\n🚀 Running backtest for {cfg['bot_name']} on {cfg['symbol']}...")
