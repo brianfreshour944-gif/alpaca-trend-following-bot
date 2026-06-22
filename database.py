@@ -3,17 +3,39 @@ FILE: database.py
 FUNCTION: The Memory Layer.
 Handles all PostgreSQL interactions, including trade logging, 
 order registration, and persistent status state management.
-
-EXTENDED FUNCTION: Manages PostgreSQL connection and data persistence.
 """
 import os
 import psycopg2
 import logging
 
 def get_db_connection():
+    """Returns a PostgreSQL database connection."""
     return psycopg2.connect(os.getenv('DATABASE_URL'))
 
-# ... keep the rest of your functions (log_trade_to_db, save_position_state, load_position_state) exactly as they are
+def update_status(bot_name, status):
+    """
+    Updates the live runtime heartbeat and state inside the bot_status table.
+    If the bot name doesn't exist yet, it safely creates the row.
+    """
+    try:
+        with get_db_connection() as conn, conn.cursor() as cur:
+            # 1. Attempt to update the existing bot's row heartbeat
+            cur.execute("""
+                UPDATE bot_status 
+                SET status = %s, last_update = NOW() 
+                WHERE bot_name = %s
+            """, (status, bot_name))
+            
+            # 2. Fallback check: If the row doesn't exist, insert it fresh
+            if cur.rowcount == 0:
+                cur.execute("""
+                    INSERT INTO bot_status (bot_name, status, last_update, session_start_time)
+                    VALUES (%s, %s, NOW(), NOW())
+                """, (bot_name, status))
+            conn.commit()
+            print(f"✅ [DEBUG] update_status succeeded for {bot_name} -> {status}")
+    except Exception as e:
+        print(f"❌ [CRITICAL] update_status FAILED: {e}")
 
 def log_trade_to_db(bot_name, symbol, side, price, quantity, value, order_id, fee=0.0, realized_pnl=0.0):
     try:
