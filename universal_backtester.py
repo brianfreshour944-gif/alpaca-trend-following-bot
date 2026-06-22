@@ -46,9 +46,10 @@ class TrendBacktester:
                 self.close = close
 
         for idx, row in df.iterrows():
-            bar = MockBar(self.symbol, row['Close'])
+            # Ensure price is a scalar float (convert from Series if needed)
+            price = float(row['Close'])  # This fixes the Series issue
+            bar = MockBar(self.symbol, price)
             signal = engine.check_signal(bar)
-            price = row['Close']
 
             if signal == "BUY" and holdings == 0:
                 cost = price * self.trade_size
