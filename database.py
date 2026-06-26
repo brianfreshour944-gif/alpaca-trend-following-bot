@@ -45,8 +45,9 @@ def log_trade_to_db(bot_name, symbol, side, price, quantity, value, order_id, fe
                 VALUES (%s, 'Alpaca', %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             """, (bot_name, symbol, side, float(price), float(quantity), float(value), float(fee), str(order_id), float(realized_pnl)))
             conn.commit()
+            print(f"✅ [DEBUG] log_trade_to_db succeeded for {bot_name} -> {side} {quantity} {symbol} @ {price}")
     except Exception as e:
-        logging.error(f"Database write error: {e}")
+        logging.error(f"❌ [CRITICAL] log_trade_to_db FAILED for {bot_name} ({side} {symbol}): {e}", exc_info=True)
 
 def save_position_state(bot_name, in_position, entry_price, trailing_stop):
     try:
