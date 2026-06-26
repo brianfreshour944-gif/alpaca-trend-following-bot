@@ -8,7 +8,7 @@ from alpaca.data.historical import CryptoHistoricalDataClient
 from alpaca.data.requests import CryptoLatestBarRequest 
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
-from utils import log_trade 
+from database import log_trade_to_db
 
 class AlpacaManager:
     def __init__(self, api_key, secret_key, bot_name="alpaca_bot_2"):
@@ -56,14 +56,17 @@ class AlpacaManager:
             )
             
             filled_price = float(order.filled_avg_price) if order.filled_avg_price else float(fallback_price)
-            
-            log_trade(
+            filled_qty = float(order.filled_qty) if getattr(order, "filled_qty", None) else float(qty)
+            trade_value = filled_price * filled_qty
+
+            log_trade_to_db(
                 bot_name=self.bot_name,
                 symbol=symbol,
-                side=side.lower(), 
-                qty=float(qty),
-                entry_price=filled_price,
-                order_id=str(order.id)
+                side=side.upper(),
+                price=filled_price,
+                quantity=filled_qty,
+                value=trade_value,
+                order_id=str(order.id),
             )
             
             return order
