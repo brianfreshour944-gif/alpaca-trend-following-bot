@@ -1,73 +1,106 @@
 """
-FILE: database.py
-FUNCTION: The Memory Layer.
-Handles all PostgreSQL interactions, including trade logging, 
-order registration, and persistent status state management.
+FILE: main.py
+FUNCTION: The Orchestrator.
+
+FIX: BUY and SELL orders were both hardcoded to a fixed quantity of 0.1,
+regardless of actual account balance or actual position size. This caused
+two separate failure modes seen in production:
+  - BUY: repeated "insufficient balance for USD" errors when 0.1 of a
+    symbol cost more than the available cash.
+  - SELL: "insufficient balance for BTC (requested 0.1, available
+    0.039463...)" when a previous BUY had only partially filled, leaving
+    a real position smaller than 0.1 -- the bot then tried to sell more
+    than it actually held.
+Now: BUY sizes itself from real buying power (spends TRADE_USD worth of
+the symbol, skips if unaffordable). SELL queries the real held quantity
+from Alpaca via get_position_qty() right before selling, instead of
+trusting local position state which can drift from partial fills.
 """
-import os
-import psycopg2
+import asyncio
 import logging
+import os
+import sys
+import database as db   # <-- import your db module
 
-def get_db_connection():
-    """Returns a PostgreSQL database connection."""
-    return psycopg2.connect(os.getenv('DATABASE_URL'))
+from exchange import AlpacaManager
+from engine import TradingEngine
+from database import load_position_state, save_position_state
 
-def update_status(bot_name, status):
-    """
-    Updates the live runtime heartbeat and state inside the bot_status table.
-    If the bot name doesn't exist yet, it safely creates the row.
-    """
-    try:
-        with get_db_connection() as conn, conn.cursor() as cur:
-            # 1. Attempt to update the existing bot's row heartbeat
-            cur.execute("""
-                UPDATE bot_status 
-                SET status = %s, last_update = NOW() 
-                WHERE bot_name = %s
-            """, (status, bot_name))
-            
-            # 2. Fallback check: If the row doesn't exist, insert it fresh
-            if cur.rowcount == 0:
-                cur.execute("""
-                    INSERT INTO bot_status (bot_name, status, last_update, session_start_time)
-                    VALUES (%s, %s, NOW(), NOW())
-                """, (bot_name, status))
-            conn.commit()
-            print(f"✅ [DEBUG] update_status succeeded for {bot_name} -> {status}")
-    except Exception as e:
-        print(f"❌ [CRITICAL] update_status FAILED: {e}")
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 
-def log_trade_to_db(bot_name, symbol, side, price, quantity, value, order_id, fee=0.0, realized_pnl=0.0):
-    try:
-        with get_db_connection() as conn, conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO trades (bot_name, exchange, symbol, side, price, quantity, value, fee_paid, order_id, realized_pnl, timestamp)
-                VALUES (%s, 'Alpaca', %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-            """, (bot_name, symbol, side, float(price), float(quantity), float(value), float(fee), str(order_id), float(realized_pnl)))
-            conn.commit()
-            print(f"✅ [DEBUG] log_trade_to_db succeeded for {bot_name} -> {side} {quantity} {symbol} @ {price}")
-    except Exception as e:
-        logging.error(f"❌ [CRITICAL] log_trade_to_db FAILED for {bot_name} ({side} {symbol}): {e}", exc_info=True)
+# How much USD to spend per BUY (env-overridable). Keeping this modest and
+# explicit avoids guessing a coin quantity that may or may not be affordable.
+TRADE_USD = float(os.getenv("TRADE_USD", "100"))
 
-def save_position_state(bot_name, in_position, entry_price, trailing_stop):
-    try:
-        with get_db_connection() as conn, conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO bot_status (bot_name, in_position, entry_price, trailing_stop, last_update)
-                VALUES (%s, %s, %s, %s, NOW())
-                ON CONFLICT (bot_name) DO UPDATE 
-                SET in_position = EXCLUDED.in_position, entry_price = EXCLUDED.entry_price, 
-                    trailing_stop = EXCLUDED.trailing_stop, last_update = NOW()
-            """, (bot_name, in_position, float(entry_price), float(trailing_stop)))
-            conn.commit()
-    except Exception as e:
-        logging.error(f"save_position_state error: {e}")
+async def main():
+    logging.info(">>> Bot Orchestrator starting up... <<<")
 
-def load_position_state(bot_name):
-    try:
-        with get_db_connection() as conn, conn.cursor() as cur:
-            cur.execute("SELECT in_position, entry_price, trailing_stop FROM bot_status WHERE bot_name = %s", (bot_name,))
-            row = cur.fetchone()
-            return (bool(row[0]), float(row[1] or 0), float(row[2] or 0)) if row else (False, 0.0, 0.0)
-    except:
-        return False, 0.0, 0.0
+    bot_name = os.getenv('BOT_NAME', 'alpaca-trend-following-bot')
+    ex = AlpacaManager(os.getenv('APCA_API_KEY_ID'), os.getenv('APCA_API_SECRET_KEY'), bot_name=bot_name)
+    eng = TradingEngine()
+
+    logging.info(f"Loading position state for bot: {bot_name}")
+    in_pos, entry, stop = load_position_state(bot_name)
+    logging.info(f"Current State -> In Position: {in_pos}, Entry: {entry}, Stop: {stop}")
+
+    logging.info("Entering core execution loop...")
+    symbols = ["BTC/USD", "ETH/USD"]
+
+    while True:
+        try:
+            # ✅ Update bot status to RUNNING (creates/updates row) – ADD THIS LINE
+            db.update_status(bot_name, 'RUNNING')
+
+            logging.info("Executing core loop iteration...")
+            # Offload synchronous data fetching to a background worker thread
+            bars = await asyncio.to_thread(ex.get_latest_bars, symbols)
+
+            for symbol, data in bars.items():
+                signal = eng.check_signal(data)
+                current_price = data.close
+
+                if signal == "BUY" and not in_pos:
+                    buying_power = await asyncio.to_thread(ex.get_buying_power)
+                    if buying_power < TRADE_USD:
+                        logging.warning(f"🚫 Skipping BUY for {symbol} -- buying power "
+                                         f"${buying_power:.2f} is below trade size ${TRADE_USD:.2f}")
+                        continue
+                    qty = round(TRADE_USD / current_price, 6)
+                    logging.info(f"🎯 BUY Signal triggered for {symbol}. Placing order for "
+                                 f"{qty} (~${TRADE_USD})...")
+                    order = await asyncio.to_thread(ex.submit_order, symbol, "buy", qty, current_price)
+                    if order:
+                        in_pos = True
+                        entry = current_price
+                        save_position_state(bot_name, in_pos, entry, stop)
+                        logging.info(f"✅ Position updated. Entry tracked at: {entry}")
+
+                elif signal == "SELL" and in_pos:
+                    held_qty = await asyncio.to_thread(ex.get_position_qty, symbol)
+                    if held_qty <= 0:
+                        logging.warning(f"🚫 SELL signal for {symbol} but no position found on "
+                                         f"Alpaca -- clearing stale local position state.")
+                        in_pos = False
+                        entry = 0.0
+                        save_position_state(bot_name, in_pos, entry, stop)
+                        continue
+                    logging.info(f"🛑 SELL Signal triggered for {symbol}. Selling actual held "
+                                 f"qty {held_qty}...")
+                    order = await asyncio.to_thread(ex.submit_order, symbol, "sell", held_qty, current_price)
+                    if order:
+                        in_pos = False
+                        entry = 0.0
+                        save_position_state(bot_name, in_pos, entry, stop)
+                        logging.info("✅ Position updated. Position cleared.")
+
+        except Exception as e:
+            logging.error(f"❌ Error in execution loop: {e}")
+
+        await asyncio.sleep(60)
+
+if __name__ == "__main__":
+    asyncio.run(main())
