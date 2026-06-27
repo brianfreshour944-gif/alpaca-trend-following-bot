@@ -1,7 +1,18 @@
 """
 FILE: exchange.py
 FUNCTION: Manages Alpaca API connections and order execution.
+
+FIX: submit_order() previously read order.filled_qty immediately after
+submission and trusted it via `if getattr(order, "filled_qty", None)`.
+For a freshly submitted order, Alpaca often returns filled_qty as the
+*string* '0' before the fill is confirmed -- and '0' is truthy in Python,
+so the fallback to the requested qty never triggered. This silently
+logged trades with quantity=0.0 and value=0.0 to the database (a
+"successful" log_trade_to_db call that wrote a useless row). Now we poll
+get_order_by_id() briefly for a real fill, and validate filled_qty is
+actually > 0 before trusting it -- not just non-None.
 """
+import time
 from alpaca.trading.client import TradingClient
 from alpaca.data.historical import CryptoHistoricalDataClient
 # FIX: Changed from CryptoLatestBarsRequest to CryptoLatestBarRequest (singular)
@@ -52,6 +63,23 @@ class AlpacaManager:
             print(f"❌ Error fetching latest bars from Alpaca: {e}")
             return {}
 
+    def _wait_for_fill(self, order_id, attempts=5, delay_seconds=1.0):
+        """Polls Alpaca briefly for a confirmed fill. Returns the latest
+        order object (whether or not it ended up filled) -- caller decides
+        what to do if it's still unfilled after the retries."""
+        order = None
+        for _ in range(attempts):
+            try:
+                order = self.trading_client.get_order_by_id(order_id)
+            except Exception as e:
+                print(f"⚠️ Could not refresh order {order_id}: {e}")
+                break
+            filled_qty = float(order.filled_qty) if order.filled_qty else 0.0
+            if filled_qty > 0:
+                return order
+            time.sleep(delay_seconds)
+        return order
+
     def submit_order(self, symbol, side, qty, fallback_price=0.0):
         try:
             trade_symbol = symbol.replace("/", "")
@@ -65,9 +93,19 @@ class AlpacaManager:
                     time_in_force=TimeInForce.GTC
                 )
             )
-            
+
+            # Market orders aren't always reported as filled the instant
+            # submit_order() returns -- poll briefly for the real fill
+            # instead of trusting a possibly-stale/zero filled_qty.
+            order = self._wait_for_fill(order.id)
+
+            filled_qty = float(order.filled_qty) if order.filled_qty and float(order.filled_qty) > 0 else 0.0
+            if filled_qty <= 0:
+                print(f"⚠️ Order {order.id} for {symbol} not confirmed filled after polling -- "
+                      f"not logging a trade. Status: {getattr(order, 'status', 'unknown')}")
+                return None
+
             filled_price = float(order.filled_avg_price) if order.filled_avg_price else float(fallback_price)
-            filled_qty = float(order.filled_qty) if getattr(order, "filled_qty", None) else float(qty)
             trade_value = filled_price * filled_qty
 
             log_trade_to_db(
