@@ -24,6 +24,17 @@ class AlpacaManager:
         except Exception:
             return 0.0
 
+    def get_buying_power(self):
+        """Returns available USD cash to trade with. Used to size BUY orders
+        instead of assuming a fixed quantity always fits, which is what
+        caused repeated 'insufficient balance' errors before."""
+        try:
+            account = self.trading_client.get_account()
+            return float(account.cash)
+        except Exception as e:
+            print(f"❌ Failed to fetch account cash: {e}")
+            return 0.0
+
     def get_latest_bars(self, symbols):
         """
         Fetches the most recent bar data for given symbols.
