@@ -1,20 +1,6 @@
 """
 FILE: main.py
 FUNCTION: The Orchestrator.
-
-FIX: BUY and SELL orders were both hardcoded to a fixed quantity of 0.1,
-regardless of actual account balance or actual position size. This caused
-two separate failure modes seen in production:
-  - BUY: repeated "insufficient balance for USD" errors when 0.1 of a
-    symbol cost more than the available cash.
-  - SELL: "insufficient balance for BTC (requested 0.1, available
-    0.039463...)" when a previous BUY had only partially filled, leaving
-    a real position smaller than 0.1 -- the bot then tried to sell more
-    than it actually held.
-Now: BUY sizes itself from real buying power (spends TRADE_USD worth of
-the symbol, skips if unaffordable). SELL queries the real held quantity
-from Alpaca via get_position_qty() right before selling, instead of
-trusting local position state which can drift from partial fills.
 """
 import asyncio
 import logging
@@ -26,15 +12,37 @@ from exchange import AlpacaManager
 from engine import TradingEngine
 from database import load_position_state, save_position_state
 
+# Add Risk Manager class for drawdown protection
+class RiskManager:
+    def __init__(self, max_drawdown_percent=10, max_position_percent=50):
+        self.max_drawdown_percent = max_drawdown_percent
+        self.max_position_percent = max_position_percent
+        self.session_start_equity = None
+        self.halted = False
+        self.halt_reason = None
+
+    def set_starting_equity(self, equity):
+        if self.session_start_equity is None:
+            self.session_start_equity = equity
+
+    def check_drawdown(self, current_equity):
+        if not self.session_start_equity:
+            return False
+        loss_percent = (self.session_start_equity - current_equity) / self.session_start_equity * 100
+        if loss_percent >= self.max_drawdown_percent:
+            self.halted = True
+            self.halt_reason = f"Max drawdown hit: {loss_percent:.2f}% >= {self.max_drawdown_percent}%"
+        return self.halted
+
+    def get_max_position_size(self, current_equity, price):
+        max_position_value = current_equity * (self.max_position_percent / 100)
+        return max_position_value / price
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-
-# How much USD to spend per BUY (env-overridable). Keeping this modest and
-# explicit avoids guessing a coin quantity that may or may not be affordable.
-TRADE_USD = float(os.getenv("TRADE_USD", "100"))
 
 async def main():
     logging.info(">>> Bot Orchestrator starting up... <<<")
@@ -42,10 +50,20 @@ async def main():
     bot_name = os.getenv('BOT_NAME', 'alpaca-trend-following-bot')
     ex = AlpacaManager(os.getenv('APCA_API_KEY_ID'), os.getenv('APCA_API_SECRET_KEY'), bot_name=bot_name)
     eng = TradingEngine()
+    risk = RiskManager()  # Initialize risk manager
 
     logging.info(f"Loading position state for bot: {bot_name}")
     in_pos, entry, stop = load_position_state(bot_name)
     logging.info(f"Current State -> In Position: {in_pos}, Entry: {entry}, Stop: {stop}")
+
+    # Set starting equity for drawdown calculation
+    try:
+        account = await asyncio.to_thread(ex.get_account)
+        starting_equity = float(account.equity)
+        risk.set_starting_equity(starting_equity)
+        logging.info(f"💰 Starting equity set: ${starting_equity:.2f}")
+    except Exception as e:
+        logging.warning(f"⚠️ Could not fetch starting equity: {e}")
 
     logging.info("Entering core execution loop...")
     symbols = ["BTC/USD", "ETH/USD"]
@@ -64,15 +82,11 @@ async def main():
                 current_price = data.close
 
                 if signal == "BUY" and not in_pos:
-                    buying_power = await asyncio.to_thread(ex.get_buying_power)
-                    if buying_power < TRADE_USD:
-                        logging.warning(f"🚫 Skipping BUY for {symbol} -- buying power "
-                                         f"${buying_power:.2f} is below trade size ${TRADE_USD:.2f}")
-                        continue
-                    qty = round(TRADE_USD / current_price, 6)
-                    logging.info(f"🎯 BUY Signal triggered for {symbol}. Placing order for "
-                                 f"{qty} (~${TRADE_USD})...")
-                    order = await asyncio.to_thread(ex.submit_order, symbol, "buy", qty, current_price)
+                    logging.info(f"🎯 BUY Signal triggered for {symbol}. Placing order...")
+                    # Use RiskManager to calculate position size
+                    position_size = risk.get_max_position_size(starting_equity, current_price)
+                    logging.info(f"📊 Calculated position size: {position_size:.6f} {symbol}")
+                    order = await asyncio.to_thread(ex.submit_order, symbol, "buy", position_size, current_price)
                     if order:
                         in_pos = True
                         entry = current_price
@@ -80,22 +94,27 @@ async def main():
                         logging.info(f"✅ Position updated. Entry tracked at: {entry}")
 
                 elif signal == "SELL" and in_pos:
-                    held_qty = await asyncio.to_thread(ex.get_position_qty, symbol)
-                    if held_qty <= 0:
-                        logging.warning(f"🚫 SELL signal for {symbol} but no position found on "
-                                         f"Alpaca -- clearing stale local position state.")
-                        in_pos = False
-                        entry = 0.0
-                        save_position_state(bot_name, in_pos, entry, stop)
-                        continue
-                    logging.info(f"🛑 SELL Signal triggered for {symbol}. Selling actual held "
-                                 f"qty {held_qty}...")
-                    order = await asyncio.to_thread(ex.submit_order, symbol, "sell", held_qty, current_price)
+                    logging.info(f"🛑 SELL Signal triggered for {symbol}. Placing order...")
+                    # Use RiskManager to calculate position size for sell
+                    position_size = risk.get_max_position_size(starting_equity, current_price)
+                    logging.info(f"📊 Calculated position size: {position_size:.6f} {symbol}")
+                    order = await asyncio.to_thread(ex.submit_order, symbol, "sell", position_size, current_price)
                     if order:
                         in_pos = False
                         entry = 0.0
                         save_position_state(bot_name, in_pos, entry, stop)
                         logging.info("✅ Position updated. Position cleared.")
+
+            # Check drawdown and halt if necessary
+            if not risk.halted:
+                try:
+                    account = await asyncio.to_thread(ex.get_account)
+                    current_equity = float(account.equity)
+                    if risk.check_drawdown(current_equity):
+                        logging.error(f"🚨 {risk.halt_reason} - Stopping all trading")
+                        break
+                except Exception as e:
+                    logging.warning(f"⚠️ Could not check drawdown: {e}")
 
         except Exception as e:
             logging.error(f"❌ Error in execution loop: {e}")
