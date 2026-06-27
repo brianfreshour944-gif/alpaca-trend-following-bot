@@ -35,6 +35,12 @@ class AlpacaManager:
         except Exception:
             return 0.0
 
+    def get_account(self):
+        """Returns the raw Alpaca account object (has .equity, .cash,
+        .buying_power, etc). Used by main.py's RiskManager for starting
+        equity and ongoing drawdown checks."""
+        return self.trading_client.get_account()
+
     def get_buying_power(self):
         """Returns available USD cash to trade with. Used to size BUY orders
         instead of assuming a fixed quantity always fits, which is what
