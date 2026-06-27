@@ -38,6 +38,10 @@ def update_status(bot_name, status):
         print(f"❌ [CRITICAL] update_status FAILED: {e}")
 
 def log_trade_to_db(bot_name, symbol, side, price, quantity, value, order_id, fee=0.0, realized_pnl=0.0):
+    if price is None or quantity is None or float(price) <= 0 or float(quantity) <= 0:
+        logging.warning(f"⚠️ Rejected log_trade_to_db call with invalid price/quantity: "
+                         f"bot={bot_name} side={side} symbol={symbol} price={price} quantity={quantity}")
+        return
     try:
         with get_db_connection() as conn, conn.cursor() as cur:
             cur.execute("""
