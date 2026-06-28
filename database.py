@@ -12,6 +12,30 @@ def get_db_connection():
     """Returns a PostgreSQL database connection."""
     return psycopg2.connect(os.getenv('DATABASE_URL'))
 
+def report_equity(bot_name, current_equity):
+    """
+    Reports this bot's real account equity to the dashboard.
+    starting_equity is set the first time a bot reports in and is never
+    overwritten afterward. live_equity and live_equity_updated_at are
+    overwritten on every call -- call this once at startup and once per
+    loop iteration with the bot's real account equity (e.g. from
+    AlpacaManager.get_account().equity).
+    """
+    try:
+        with get_db_connection() as conn, conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO bot_status (bot_name, starting_equity, live_equity, live_equity_updated_at, last_update)
+                VALUES (%s, %s, %s, NOW(), NOW())
+                ON CONFLICT (bot_name) DO UPDATE
+                SET live_equity = EXCLUDED.live_equity,
+                    live_equity_updated_at = NOW(),
+                    last_update = NOW(),
+                    starting_equity = COALESCE(bot_status.starting_equity, EXCLUDED.starting_equity)
+            """, (bot_name, float(current_equity), float(current_equity)))
+            conn.commit()
+    except Exception as e:
+        logging.error(f"❌ [CRITICAL] report_equity FAILED for {bot_name}: {e}")
+
 def update_status(bot_name, status):
     """
     Updates the live runtime heartbeat and state inside the bot_status table.
