@@ -73,6 +73,10 @@ async def main():
             starting_equity = float(account.equity)
             risk.set_starting_equity(starting_equity)
             logging.info(f"💰 Starting equity set: ${starting_equity:.2f}")
+            # Report to dashboard (bot_status.starting_equity is only set
+            # once, on first report -- this call is safe to repeat on
+            # every restart without overwriting it with a later value)
+            await asyncio.to_thread(db.report_equity, bot_name, starting_equity)
         except Exception as e:
             logging.error(f"❌ FATAL: Could not fetch starting equity: {e}")
             logging.error("🚨 Bot cannot start without account information")
@@ -113,9 +117,21 @@ async def main():
 
                 elif signal == "SELL" and in_pos:
                     logging.info(f"🛑 SELL Signal triggered for {symbol}. Placing order...")
-                    # Use RiskManager to calculate position size for sell
-                    position_size = risk.get_max_position_size(starting_equity, current_price)
-                    logging.info(f"📊 Calculated position size: {position_size:.6f} {symbol}")
+                    # FIX: previously recalculated a position size from
+                    # equity here too (same formula as BUY), which doesn't
+                    # match what was actually bought -- caused repeated
+                    # "insufficient balance" errors when the real held
+                    # quantity differed from this fresh calculation. Sell
+                    # exactly what's actually held instead.
+                    position_size = await asyncio.to_thread(ex.get_position_qty, symbol)
+                    if position_size <= 0:
+                        logging.warning(f"🚫 SELL signal for {symbol} but no position found on "
+                                        f"Alpaca -- clearing stale local position state.")
+                        in_pos = False
+                        entry = 0.0
+                        save_position_state(bot_name, in_pos, entry, stop)
+                        continue
+                    logging.info(f"📊 Selling actual held qty: {position_size:.6f} {symbol}")
                     order = await asyncio.to_thread(ex.submit_order, symbol, "sell", position_size, current_price)
                     if order:
                         in_pos = False
@@ -128,6 +144,7 @@ async def main():
                 try:
                     account = await asyncio.to_thread(ex.get_account)
                     current_equity = float(account.equity)
+                    await asyncio.to_thread(db.report_equity, bot_name, current_equity)
                     if risk.check_drawdown(current_equity):
                         logging.error(f"🚨 {risk.halt_reason} - Stopping all trading")
                         break
